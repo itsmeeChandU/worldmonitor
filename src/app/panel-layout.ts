@@ -870,8 +870,8 @@ export class PanelLayoutManager implements AppModule {
 
     const defaultOrder = Object.keys(DEFAULT_PANELS).filter(k => k !== 'map');
     const activePanelKeys = Object.keys(this.ctx.panelSettings).filter(k => k !== 'map');
-    const savedOrder = this.getSavedPanelOrder();
     const bottomSet = this.getSavedBottomSet();
+    const savedOrder = this.getSavedPanelOrder();
     this.bottomSetMemory = bottomSet;
     const effectiveUltraWide = this.getEffectiveUltraWide();
     this.wasUltraWide = effectiveUltraWide;
@@ -1063,9 +1063,82 @@ export class PanelLayoutManager implements AppModule {
       .map((el) => (el as HTMLElement).dataset.panel)
       .filter((key): key is string => !!key);
 
-    const allOrder = [...sidebarIds, ...bottomIds];
+    const allOrder = this.buildUnifiedOrder(sidebarIds, bottomIds);
+    this.resolvedPanelOrder = allOrder;
     localStorage.setItem(this.ctx.PANEL_ORDER_KEY, JSON.stringify(allOrder));
     localStorage.setItem(this.ctx.PANEL_ORDER_KEY + '-bottom-set', JSON.stringify(Array.from(this.bottomSetMemory)));
+  }
+
+  private buildUnifiedOrder(sidebarIds: string[], bottomIds: string[]): string[] {
+    const presentIds = [...sidebarIds, ...bottomIds];
+    const uniqueIds: string[] = [];
+    const seen = new Set<string>();
+
+    presentIds.forEach((id) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      uniqueIds.push(id);
+    });
+
+    const previousOrder = new Map<string, number>();
+    this.resolvedPanelOrder.forEach((id, index) => {
+      if (seen.has(id) && !previousOrder.has(id)) {
+        previousOrder.set(id, index);
+      }
+    });
+    uniqueIds.forEach((id, index) => {
+      if (!previousOrder.has(id)) {
+        previousOrder.set(id, this.resolvedPanelOrder.length + index);
+      }
+    });
+
+    const edges = new Map<string, Set<string>>();
+    const indegree = new Map<string, number>();
+    uniqueIds.forEach((id) => {
+      edges.set(id, new Set());
+      indegree.set(id, 0);
+    });
+
+    const addConstraints = (ids: string[]) => {
+      for (let i = 1; i < ids.length; i++) {
+        const prev = ids[i - 1]!;
+        const next = ids[i]!;
+        if (prev === next || !seen.has(prev) || !seen.has(next)) continue;
+        const nextIds = edges.get(prev);
+        if (!nextIds || nextIds.has(next)) continue;
+        nextIds.add(next);
+        indegree.set(next, (indegree.get(next) ?? 0) + 1);
+      }
+    };
+
+    addConstraints(sidebarIds);
+    addConstraints(bottomIds);
+
+    const compareIds = (a: string, b: string) =>
+      (previousOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (previousOrder.get(b) ?? Number.MAX_SAFE_INTEGER);
+
+    const available = uniqueIds
+      .filter((id) => (indegree.get(id) ?? 0) === 0)
+      .sort(compareIds);
+    const merged: string[] = [];
+
+    while (available.length > 0) {
+      const current = available.shift()!;
+      merged.push(current);
+
+      edges.get(current)?.forEach((next) => {
+        const nextIndegree = (indegree.get(next) ?? 0) - 1;
+        indegree.set(next, nextIndegree);
+        if (nextIndegree === 0) {
+          available.push(next);
+        }
+      });
+      available.sort(compareIds);
+    }
+
+    return merged.length === uniqueIds.length
+      ? merged
+      : uniqueIds.sort(compareIds);
   }
 
   private getSavedBottomSet(): Set<string> {
