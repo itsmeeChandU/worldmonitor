@@ -47,15 +47,15 @@ This service provides all country-level geocoding: point-in-polygon lookups, ISO
 ### Data Flow
 
 ```
-countries.geojson (R2)  ──┐
-                           ├──  Promise.all  ──►  Parse & Index  ──►  countryIndex Map
-country-boundary-overrides ┘   (parallel)        (merge overrides)
-  .geojson (R2)
+countries.geojson (/data/)  ──►  Parse & Index (rebuildCountryIndex)  ──►  countryIndex Map
+                                        │
+country-boundary-overrides.geojson      │
+  (R2 CDN, 3s timeout)     ──►  applyCountryGeometryOverrides  ──►  replace matching polygons
 ```
 
-1. `countries.geojson` — base polygons with ISO codes and names
-2. `country-boundary-overrides.geojson` — optional higher-resolution polygons from [Natural Earth](https://www.naturalearthdata.com/). Features matched by `ISO3166-1-Alpha-2` (or `ISO_A2`) code; matching features replace the base geometry
-3. Both files are fetched in parallel via `Promise.all`. Override fetch failures are silently ignored
+1. `countries.geojson` — base polygons with ISO codes and names, served from `/data/` (Vercel)
+2. `country-boundary-overrides.geojson` — optional higher-resolution polygons from [Natural Earth](https://www.naturalearthdata.com/), served from R2 CDN (`maps.worldmonitor.app`). Features matched by `ISO3166-1-Alpha-2` (or `ISO_A2`) code; matching features replace the base geometry
+3. Base file loads first and the country index is built immediately (service becomes usable). Override file is fetched afterward with a **3-second timeout** — failures are silently ignored. Override lookup uses a `Map<code, Feature>` for O(1) matching
 
 ### Indexed Data Structures
 
@@ -100,8 +100,8 @@ The override mechanism lets us improve individual country boundaries without rep
 
 ### How It Works
 
-1. The app loads `country-boundary-overrides.geojson` from R2
-2. For each feature in the override file, it finds the matching country in `countries.geojson` by ISO Alpha-2 code
+1. After loading base `countries.geojson`, the app fetches `country-boundary-overrides.geojson` from R2 CDN with a 3-second timeout
+2. For each feature in the override file, it matches the country in `countries.geojson` by ISO Alpha-2 code (using a `Map` for O(1) lookup)
 3. The override geometry **replaces** the base geometry (both in the raw GeoJSON used for map rendering and in the indexed point-in-polygon data)
 4. The override file can contain any number of countries — only matching codes are applied
 
@@ -141,7 +141,7 @@ PMTiles are also served from R2 via `maps.worldmonitor.app`, configured through 
 |---------|-----|
 | Using `pub-*.r2.dev` URLs in code | Always use `maps.worldmonitor.app` (CF-proxied) |
 | Serving large GeoJSON from Vercel | Upload to R2 — Vercel bandwidth is expensive at scale |
-| Fetching overrides sequentially after base | Use `Promise.all` — both are independent |
+| Fetching overrides without a timeout | Always use `AbortSignal.timeout` — override CDN may be slow or down |
 | Forgetting `POLITICAL_OVERRIDES` | Check if the country code needs mapping (e.g., `CN-TW → TW`) |
 | Adding aliases without checking existing | Check `NAME_ALIASES` and `nameToIso2` map first |
 | Using `projection([lon, lat])` without NaN guard | d3 projections can return `[NaN, NaN]` (truthy) — always check with `Number.isFinite()` |
