@@ -140,7 +140,12 @@ function getSymbolTokens(item: Pick<MarketData, 'symbol' | 'display' | 'name'>):
 
 function matchesMarketHeadline(market: Pick<MarketData, 'symbol' | 'display' | 'name'>, title: string): boolean {
   const normalizedTitle = title.toLowerCase();
-  return getSymbolTokens(market).some((token) => normalizedTitle.includes(token));
+  return getSymbolTokens(market).some((token) => {
+    if (token.length <= 4) {
+      return new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(normalizedTitle);
+    }
+    return normalizedTitle.includes(token);
+  });
 }
 
 function collectHeadlinePool(newsByCategory: Record<string, NewsItem[]>): NewsItem[] {
@@ -353,8 +358,8 @@ export async function buildDailyMarketBrief(options: BuildDailyMarketBriefOption
         model = generated.model;
         fallback = false;
       }
-    } catch {
-      // Fall back to the deterministic summary.
+    } catch (err) {
+      console.warn('[DailyBrief] AI summarization failed, using rules-based fallback:', (err as Error).message);
     }
   }
 

@@ -1046,6 +1046,11 @@ export class DataLoaderManager implements AppModule {
       panel.renderBacktests(results);
     } catch (error) {
       console.error('[StockBacktest] failed:', error);
+      const stored = await fetchStoredStockBacktests().catch(() => []);
+      if (stored.length > 0) {
+        panel.renderBacktests(stored, 'cached');
+        return;
+      }
       panel.showError('Premium stock backtesting is temporarily unavailable.');
     }
   }

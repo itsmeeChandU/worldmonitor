@@ -7,7 +7,7 @@ import type {
 import { callLlm } from '../../../_shared/llm';
 import { cachedFetchJson } from '../../../_shared/redis';
 import { CHROME_UA, yahooGate } from '../../../_shared/constants';
-import { UPSTREAM_TIMEOUT_MS } from './_shared';
+import { UPSTREAM_TIMEOUT_MS, sanitizeSymbol } from './_shared';
 import { storeStockAnalysisSnapshot } from './premium-stock-store';
 import { searchRecentStockHeadlines } from './stock-news-search';
 
@@ -116,10 +116,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function sanitizeSymbol(raw: string): string {
-  return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
-}
-
 export function signalDirection(signal: string): 'long' | 'short' | null {
   const normalized = signal.toLowerCase();
   if (normalized.includes('buy')) return 'long';
@@ -173,12 +169,24 @@ function emaSeries(values: number[], period: number): number[] {
   return out;
 }
 
+function wilderSmoothing(values: number[], period: number): number[] {
+  const out: number[] = new Array(values.length).fill(Number.NaN);
+  let sum = 0;
+  for (let i = 1; i <= period && i < values.length; i++) sum += values[i] ?? 0;
+  if (period < values.length) out[period] = sum / period;
+  for (let i = period + 1; i < values.length; i++) {
+    const prev = out[i - 1] ?? 0;
+    out[i] = (prev * (period - 1) + (values[i] ?? 0)) / period;
+  }
+  return out;
+}
+
 function rsiSeries(values: number[], period: number): number[] {
   const deltas = values.map((value, index) => index === 0 ? 0 : value - (values[index - 1] ?? value));
   const gains = deltas.map((delta) => delta > 0 ? delta : 0);
   const losses = deltas.map((delta) => delta < 0 ? -delta : 0);
-  const avgGains = smaSeries(gains, period);
-  const avgLosses = smaSeries(losses, period);
+  const avgGains = wilderSmoothing(gains, period);
+  const avgLosses = wilderSmoothing(losses, period);
   return values.map((_, index) => {
     const avgGain = avgGains[index] ?? Number.NaN;
     const avgLoss = avgLosses[index] ?? Number.NaN;
@@ -758,92 +766,7 @@ export function buildAnalysisResponse(params: {
   };
 }
 
-export async function analyzeStock(
-  _ctx: ServerContext,
-  req: AnalyzeStockRequest,
-): Promise<AnalyzeStockResponse> {
-  const symbol = sanitizeSymbol(req.symbol || '');
-  if (!symbol) {
-    return {
-      available: false,
-      symbol: '',
-      name: '',
-      display: '',
-      currency: '',
-      currentPrice: 0,
-      changePercent: 0,
-      signalScore: 0,
-      signal: '',
-      trendStatus: '',
-      volumeStatus: '',
-      macdStatus: '',
-      rsiStatus: '',
-      summary: '',
-      action: '',
-      confidence: '',
-      technicalSummary: '',
-      newsSummary: '',
-      whyNow: '',
-      bullishFactors: [],
-      riskFactors: [],
-      supportLevels: [],
-      resistanceLevels: [],
-      headlines: [],
-      ma5: 0,
-      ma10: 0,
-      ma20: 0,
-      ma60: 0,
-      biasMa5: 0,
-      biasMa10: 0,
-      biasMa20: 0,
-      volumeRatio5d: 0,
-      rsi12: 0,
-      macdDif: 0,
-      macdDea: 0,
-      macdBar: 0,
-      provider: '',
-      model: '',
-      fallback: true,
-      newsSearched: false,
-      generatedAt: '',
-      analysisId: '',
-      analysisAt: 0,
-      stopLoss: 0,
-      takeProfit: 0,
-      engineVersion: STOCK_ANALYSIS_ENGINE_VERSION,
-    };
-  }
-
-  const name = (req.name || symbol).trim().slice(0, 120) || symbol;
-  const includeNews = req.includeNews === true;
-  const cacheKey = `market:analyze-stock:v1:${symbol}:${includeNews ? 'news' : 'no-news'}`;
-
-  const cached = await cachedFetchJson<AnalyzeStockResponse>(cacheKey, CACHE_TTL_SECONDS, async () => {
-    const history = await fetchYahooHistory(symbol);
-    if (!history) return null;
-
-    const technical = buildTechnicalSnapshot(history.candles);
-    technical.currency = history.currency || 'USD';
-    const headlines = includeNews ? (await searchRecentStockHeadlines(symbol, name, NEWS_LIMIT)).headlines : [];
-    const overlay = await buildAiOverlay(symbol, name, technical, headlines);
-    const analysisAt = history.candles[history.candles.length - 1]?.timestamp || Date.now();
-    const response = buildAnalysisResponse({
-      symbol,
-      name,
-      currency: history.currency || 'USD',
-      technical,
-      headlines,
-      overlay,
-      includeNews,
-      analysisAt,
-      generatedAt: new Date().toISOString(),
-    });
-    await storeStockAnalysisSnapshot(response, includeNews);
-    return response;
-  });
-
-  if (cached) return cached;
-
+function buildEmptyAnalysisResponse(symbol: string, name: string, includeNews: boolean): AnalyzeStockResponse {
   return {
     available: false,
     symbol,
@@ -892,4 +815,47 @@ export async function analyzeStock(
     takeProfit: 0,
     engineVersion: STOCK_ANALYSIS_ENGINE_VERSION,
   };
+}
+
+export async function analyzeStock(
+  _ctx: ServerContext,
+  req: AnalyzeStockRequest,
+): Promise<AnalyzeStockResponse> {
+  const symbol = sanitizeSymbol(req.symbol || '');
+  if (!symbol) {
+    return buildEmptyAnalysisResponse('', '', false);
+  }
+
+  const name = (req.name || symbol).trim().slice(0, 120) || symbol;
+  const includeNews = req.includeNews === true;
+  const nameSuffix = name !== symbol ? `:${name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 30).toLowerCase()}` : '';
+  const cacheKey = `market:analyze-stock:v1:${symbol}:${includeNews ? 'news' : 'no-news'}${nameSuffix}`;
+
+  const cached = await cachedFetchJson<AnalyzeStockResponse>(cacheKey, CACHE_TTL_SECONDS, async () => {
+    const history = await fetchYahooHistory(symbol);
+    if (!history) return null;
+
+    const technical = buildTechnicalSnapshot(history.candles);
+    technical.currency = history.currency || 'USD';
+    const headlines = includeNews ? (await searchRecentStockHeadlines(symbol, name, NEWS_LIMIT)).headlines : [];
+    const overlay = await buildAiOverlay(symbol, name, technical, headlines);
+    const analysisAt = history.candles[history.candles.length - 1]?.timestamp || Date.now();
+    const response = buildAnalysisResponse({
+      symbol,
+      name,
+      currency: history.currency || 'USD',
+      technical,
+      headlines,
+      overlay,
+      includeNews,
+      analysisAt,
+      generatedAt: new Date().toISOString(),
+    });
+    await storeStockAnalysisSnapshot(response, includeNews);
+    return response;
+  });
+
+  if (cached) return cached;
+
+  return buildEmptyAnalysisResponse(symbol, name, includeNews);
 }

@@ -647,7 +647,7 @@ export class PanelLayoutManager implements AppModule {
     this.lazyPanel('daily-market-brief', () =>
       import('@/components/DailyMarketBriefPanel').then(m => new m.DailyMarketBriefPanel()),
       undefined,
-      _lockPanels ? ['Pre-market watchlist priorities', 'Action plan for the session', 'Risk watch tied to current finance headlines'] : undefined,
+      !_wmKeyPresent ? ['Pre-market watchlist priorities', 'Action plan for the session', 'Risk watch tied to current finance headlines'] : undefined,
     );
 
     this.lazyPanel('oref-sirens', () =>

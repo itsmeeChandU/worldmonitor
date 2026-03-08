@@ -343,7 +343,7 @@ const FINANCE_PANELS: Record<string, PanelConfig> = {
   markets: { name: 'Live Markets', enabled: true, priority: 1 },
   'stock-analysis': { name: 'Premium Stock Analysis', enabled: true, priority: 1, premium: 'locked' },
   'stock-backtest': { name: 'Premium Backtesting', enabled: true, priority: 1, premium: 'locked' },
-  'daily-market-brief': { name: 'Daily Market Brief', enabled: true, priority: 1, ...(_desktop && { premium: 'locked' as const }) },
+  'daily-market-brief': { name: 'Daily Market Brief', enabled: true, priority: 1, premium: 'locked' },
   'markets-news': { name: 'Markets News', enabled: true, priority: 2 },
   forex: { name: 'Forex & Currencies', enabled: true, priority: 1 },
   bonds: { name: 'Fixed Income', enabled: true, priority: 1 },

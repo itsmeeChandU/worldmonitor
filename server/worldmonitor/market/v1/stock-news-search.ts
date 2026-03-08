@@ -248,6 +248,7 @@ async function searchWithSerpApi(query: string, maxResults: number, days: number
     api_key: apiKey,
     gl: 'us',
     hl: 'en',
+    tbs: days <= 1 ? 'qdr:d' : days <= 7 ? 'qdr:w' : '',
     no_cache: 'false',
   }).toString()}`, {
     headers: {

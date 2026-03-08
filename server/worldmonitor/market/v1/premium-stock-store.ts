@@ -3,6 +3,7 @@ import type {
   BacktestStockResponse,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import { getCachedJsonBatch, runRedisPipeline, setCachedJson } from '../../../_shared/redis';
+import { sanitizeSymbol } from './_shared';
 
 const ANALYSIS_HISTORY_LIMIT = 32;
 const ANALYSIS_HISTORY_TTL_SECONDS = 90 * 24 * 60 * 60;
@@ -11,10 +12,6 @@ const BACKTEST_LEDGER_TTL_SECONDS = 90 * 24 * 60 * 60;
 const BACKTEST_STORE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 type AnalysisHistoryRecord = Record<string, AnalyzeStockResponse[]>;
-
-function sanitizeSymbol(raw: string): string {
-  return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
-}
 
 function compareAnalysisDesc<T extends { analysisAt: number; generatedAt: string }>(a: T, b: T): number {
   const aTime = a.analysisAt || Date.parse(a.generatedAt || '') || 0;
@@ -169,7 +166,10 @@ export async function storeHistoricalBacktestAnalysisRecords(
   }
 
   if (commands.length === 0) return;
-  await runRedisPipeline(commands);
+  const PIPELINE_CHUNK = 200;
+  for (let i = 0; i < commands.length; i += PIPELINE_CHUNK) {
+    await runRedisPipeline(commands.slice(i, i + PIPELINE_CHUNK));
+  }
 
   await Promise.all([...touchedSymbols].map(async (symbol) => {
     const ids = await zrevrange(backtestLedgerIndexKey(symbol), BACKTEST_LEDGER_LIMIT + 8);

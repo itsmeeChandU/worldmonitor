@@ -45,17 +45,21 @@ export function getStockAnalysisTargets(limit = DEFAULT_LIMIT): StockAnalysisTar
 }
 
 export async function fetchStockAnalysesForTargets(targets: StockAnalysisTarget[]): Promise<StockAnalysisResult[]> {
-  const results = await Promise.allSettled(
-    targets.map((target) => client.analyzeStock({
-      symbol: target.symbol,
-      name: target.name,
-      includeNews: true,
-    })),
-  );
-
-  return results
-    .flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
-    .filter((result) => result.available);
+  const results: StockAnalysisResult[] = [];
+  for (let i = 0; i < targets.length; i++) {
+    if (i > 0) await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      const result = await client.analyzeStock({
+        symbol: targets[i]!.symbol,
+        name: targets[i]!.name,
+        includeNews: true,
+      });
+      if (result.available) results.push(result);
+    } catch {
+      // Skip failed individual analysis
+    }
+  }
+  return results;
 }
 
 export async function fetchStockAnalyses(limit = DEFAULT_LIMIT): Promise<StockAnalysisResult[]> {

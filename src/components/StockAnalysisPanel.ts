@@ -13,7 +13,7 @@ function formatPrice(price: number, currency: string): string {
   return `${currency === 'USD' ? '$' : ''}${price.toFixed(2)}${currency && currency !== 'USD' ? ` ${currency}` : ''}`;
 }
 
-function signalTone(signal: string): string {
+function stockSignalTone(signal: string): string {
   const normalized = signal.toLowerCase();
   if (normalized.includes('buy')) return '#8df0b2';
   if (normalized.includes('hold') || normalized.includes('watch')) return '#f4d06f';
@@ -52,7 +52,7 @@ export class StockAnalysisPanel extends Panel {
   }
 
   private renderCard(item: StockAnalysisResult, history: StockAnalysisResult[]): string {
-    const tone = signalTone(item.signal);
+    const tone = stockSignalTone(item.signal);
     const priorRuns = history.filter((entry) => entry.generatedAt !== item.generatedAt).slice(0, 3);
     const previous = priorRuns[0];
     const signalDelta = previous ? item.signalScore - previous.signalScore : null;

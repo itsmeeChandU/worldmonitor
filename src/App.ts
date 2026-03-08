@@ -592,6 +592,12 @@ export class App {
 
     if (SITE_VARIANT === 'finance') {
       this.refreshScheduler.scheduleRefresh(
+        'stock-analysis',
+        () => this.dataLoader.loadStockAnalysis(),
+        15 * 60 * 1000,
+        () => getSecretState('WORLDMONITOR_API_KEY').present,
+      );
+      this.refreshScheduler.scheduleRefresh(
         'daily-market-brief',
         () => this.dataLoader.loadDailyMarketBrief(),
         60 * 60 * 1000,

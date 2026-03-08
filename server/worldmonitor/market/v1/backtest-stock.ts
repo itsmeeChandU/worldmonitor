@@ -19,6 +19,7 @@ import {
   storeHistoricalBacktestAnalysisRecords,
   storeStockBacktestSnapshot,
 } from './premium-stock-store';
+import { sanitizeSymbol } from './_shared';
 
 const CACHE_TTL_SECONDS = 900;
 const DEFAULT_WINDOW_DAYS = 10;
@@ -28,10 +29,6 @@ const MIN_ANALYSIS_BARS = 60;
 
 function round(value: number, digits = 2): number {
   return Number.isFinite(value) ? Number(value.toFixed(digits)) : 0;
-}
-
-function sanitizeSymbol(raw: string): string {
-  return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
 }
 
 function compareByAnalysisAtDesc<T extends { analysisAt: number }>(a: T, b: T): number {
@@ -99,7 +96,26 @@ function simulateEvaluation(
   };
 }
 
+const ledgerInFlight = new Map<string, Promise<AnalyzeStockResponse[]>>();
+
 async function ensureHistoricalAnalysisLedger(
+  symbol: string,
+  name: string,
+  currency: string,
+  candles: Candle[],
+): Promise<AnalyzeStockResponse[]> {
+  const existing = ledgerInFlight.get(symbol);
+  if (existing) return existing;
+  const promise = _ensureHistoricalAnalysisLedger(symbol, name, currency, candles);
+  ledgerInFlight.set(symbol, promise);
+  try {
+    return await promise;
+  } finally {
+    ledgerInFlight.delete(symbol);
+  }
+}
+
+async function _ensureHistoricalAnalysisLedger(
   symbol: string,
   name: string,
   currency: string,
@@ -169,68 +185,71 @@ export const backtestStock: MarketServiceHandler['backtestStock'] = async (
   const evalWindowDays = Math.max(3, Math.min(30, req.evalWindowDays || DEFAULT_WINDOW_DAYS));
   const cacheKey = `market:backtest:v2:${symbol}:${evalWindowDays}`;
 
-  const cached = await cachedFetchJson<BacktestStockResponse>(cacheKey, CACHE_TTL_SECONDS, async () => {
-    const history = await fetchYahooHistory(symbol);
-    if (!history || history.candles.length < MIN_REQUIRED_BARS) return null;
+  try {
+    const cached = await cachedFetchJson<BacktestStockResponse>(cacheKey, CACHE_TTL_SECONDS, async () => {
+      const history = await fetchYahooHistory(symbol);
+      if (!history || history.candles.length < MIN_REQUIRED_BARS) return null;
 
-    const analyses = await ensureHistoricalAnalysisLedger(
-      symbol,
-      req.name || symbol,
-      history.currency || 'USD',
-      history.candles,
-    );
-    if (analyses.length === 0) return null;
+      const analyses = await ensureHistoricalAnalysisLedger(
+        symbol,
+        req.name || symbol,
+        history.currency || 'USD',
+        history.candles,
+      );
+      if (analyses.length === 0) return null;
 
-    const candleIndexByTimestamp = new Map<number, number>();
-    history.candles.forEach((candle, index) => {
-      candleIndexByTimestamp.set(candle.timestamp, index);
+      const candleIndexByTimestamp = new Map<number, number>();
+      history.candles.forEach((candle, index) => {
+        candleIndexByTimestamp.set(candle.timestamp, index);
+      });
+
+      const evaluations = analyses
+        .map((analysis) => {
+          const candleIndex = candleIndexByTimestamp.get(analysis.analysisAt);
+          if (candleIndex == null) return null;
+          const forwardBars = history.candles.slice(candleIndex + 1, candleIndex + 1 + evalWindowDays);
+          if (forwardBars.length < evalWindowDays) return null;
+          return simulateEvaluation(analysis, forwardBars);
+        })
+        .filter((evaluation): evaluation is BacktestStockEvaluation => !!evaluation)
+        .sort(compareByAnalysisAtDesc);
+
+      if (evaluations.length === 0) return null;
+
+      const actionableEvaluations = evaluations.length;
+      const profitable = evaluations.filter((evaluation) => evaluation.simulatedReturnPct > 0);
+      const winRate = (profitable.length / actionableEvaluations) * 100;
+      const directionAccuracy = (evaluations.filter((evaluation) => evaluation.directionCorrect).length / actionableEvaluations) * 100;
+      const avgSimulatedReturnPct = evaluations.reduce((sum, evaluation) => sum + evaluation.simulatedReturnPct, 0) / actionableEvaluations;
+      const cumulativeSimulatedReturnPct = evaluations.reduce((sum, evaluation) => sum + evaluation.simulatedReturnPct, 0);
+      const latest = evaluations[0]!;
+      const response: BacktestStockResponse = {
+        available: true,
+        symbol,
+        name: req.name || symbol,
+        display: symbol,
+        currency: history.currency || 'USD',
+        evalWindowDays,
+        evaluationsRun: analyses.length,
+        actionableEvaluations,
+        winRate: round(winRate),
+        directionAccuracy: round(directionAccuracy),
+        avgSimulatedReturnPct: round(avgSimulatedReturnPct),
+        cumulativeSimulatedReturnPct: round(cumulativeSimulatedReturnPct),
+        latestSignal: latest.signal,
+        latestSignalScore: round(latest.signalScore),
+        summary: `Validated ${actionableEvaluations} stored analysis records over ${evalWindowDays} trading days with ${round(winRate)}% win rate and ${round(avgSimulatedReturnPct)}% average simulated return.`,
+        generatedAt: new Date().toISOString(),
+        evaluations: evaluations.slice(0, MAX_EVALUATIONS),
+        engineVersion: STOCK_ANALYSIS_ENGINE_VERSION,
+      };
+      await storeStockBacktestSnapshot(response);
+      return response;
     });
-
-    const evaluations = analyses
-      .map((analysis) => {
-        const candleIndex = candleIndexByTimestamp.get(analysis.analysisAt);
-        if (candleIndex == null) return null;
-        const forwardBars = history.candles.slice(candleIndex + 1, candleIndex + 1 + evalWindowDays);
-        if (forwardBars.length < evalWindowDays) return null;
-        return simulateEvaluation(analysis, forwardBars);
-      })
-      .filter((evaluation): evaluation is BacktestStockEvaluation => !!evaluation)
-      .sort(compareByAnalysisAtDesc);
-
-    if (evaluations.length === 0) return null;
-
-    const actionableEvaluations = evaluations.length;
-    const profitable = evaluations.filter((evaluation) => evaluation.simulatedReturnPct > 0);
-    const winRate = (profitable.length / actionableEvaluations) * 100;
-    const directionAccuracy = (evaluations.filter((evaluation) => evaluation.directionCorrect).length / actionableEvaluations) * 100;
-    const avgSimulatedReturnPct = evaluations.reduce((sum, evaluation) => sum + evaluation.simulatedReturnPct, 0) / actionableEvaluations;
-    const cumulativeSimulatedReturnPct = evaluations.reduce((sum, evaluation) => sum + evaluation.simulatedReturnPct, 0);
-    const latest = evaluations[0]!;
-    const response: BacktestStockResponse = {
-      available: true,
-      symbol,
-      name: req.name || symbol,
-      display: symbol,
-      currency: history.currency || 'USD',
-      evalWindowDays,
-      evaluationsRun: analyses.length,
-      actionableEvaluations,
-      winRate: round(winRate),
-      directionAccuracy: round(directionAccuracy),
-      avgSimulatedReturnPct: round(avgSimulatedReturnPct),
-      cumulativeSimulatedReturnPct: round(cumulativeSimulatedReturnPct),
-      latestSignal: latest.signal,
-      latestSignalScore: round(latest.signalScore),
-      summary: `Validated ${actionableEvaluations} stored analysis records over ${evalWindowDays} trading days with ${round(winRate)}% win rate and ${round(avgSimulatedReturnPct)}% average simulated return.`,
-      generatedAt: new Date().toISOString(),
-      evaluations: evaluations.slice(0, MAX_EVALUATIONS),
-      engineVersion: STOCK_ANALYSIS_ENGINE_VERSION,
-    };
-    await storeStockBacktestSnapshot(response);
-    return response;
-  });
-
-  if (cached) return cached;
+    if (cached) return cached;
+  } catch (err) {
+    console.warn(`[backtestStock] ${symbol} failed:`, (err as Error).message);
+  }
 
   return {
     available: false,

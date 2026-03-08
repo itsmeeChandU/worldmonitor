@@ -22,17 +22,21 @@ export async function fetchStockBacktestsForTargets(
   targets: Array<{ symbol: string; name: string }>,
   evalWindowDays = DEFAULT_EVAL_WINDOW_DAYS,
 ): Promise<StockBacktestResult[]> {
-  const results = await Promise.allSettled(
-    targets.map((target) => client.backtestStock({
-      symbol: target.symbol,
-      name: target.name,
-      evalWindowDays,
-    })),
-  );
-
-  return results
-    .flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
-    .filter((result) => result.available);
+  const results: StockBacktestResult[] = [];
+  for (let i = 0; i < targets.length; i++) {
+    if (i > 0) await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      const result = await client.backtestStock({
+        symbol: targets[i]!.symbol,
+        name: targets[i]!.name,
+        evalWindowDays,
+      });
+      if (result.available) results.push(result);
+    } catch {
+      // Skip failed individual backtest
+    }
+  }
+  return results;
 }
 
 export async function fetchStockBacktests(
